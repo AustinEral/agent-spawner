@@ -23,7 +23,7 @@ Identify:
 - **Model**: from `agents.defaults.model`
 - **Tool keys**: anything in `tools.*` (search APIs, etc.)
 - **Plugins**: `plugins.installs` — names and npm specs
-- **Skills**: workspace `skills/` directory
+- **Skills**: run `openclaw skills list` to see what's bundled vs workspace-only. Only carry over non-bundled skills.
 
 ## 2. Ask
 
