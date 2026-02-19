@@ -33,6 +33,8 @@ Identify:
 
 Don't ask about keys, plugins, skills, ports, or config. Carry everything over, use defaults.
 
+If the user provides channel tokens (Telegram bot, Discord bot, etc.), set those up too. Channels are optional — don't ask, but accept if offered.
+
 ## 3. Confirm Plan
 
 After gathering answers, present the full plan before doing anything. Show everything in one summary:
@@ -70,11 +72,19 @@ cd <agent-name>
 
 Set env and run non-interactive onboard. Match the provider detected in step 1:
 
+Check for port conflicts first:
+```bash
+docker ps --format '{{.Ports}}' | grep -oP '\d+(?=->)' | sort -n
+```
+
+Pick a gateway port AND bridge port that aren't in use (bridge = gateway + 1 by convention).
+
 ```bash
 export OPENCLAW_IMAGE=alpine/openclaw:latest
 export OPENCLAW_CONFIG_DIR=~/.openclaw-<agent-name>
 export OPENCLAW_WORKSPACE_DIR=~/.openclaw-<agent-name>/workspace
-export OPENCLAW_GATEWAY_PORT=<unused port, default 18789>
+export OPENCLAW_GATEWAY_PORT=<unused port>
+export OPENCLAW_BRIDGE_PORT=<unused port, typically gateway + 1>
 export OPENCLAW_GATEWAY_BIND=lan
 
 mkdir -p $OPENCLAW_CONFIG_DIR/workspace
@@ -141,10 +151,13 @@ $OC plugins install <npm-spec>
 # Repeat for each plugin
 ```
 
-**Skills** (copy workspace skills):
+**Skills** (copy non-bundled skills from current agent):
 ```bash
-# Docker
-docker cp <source-workspace>/skills/ <container>:/home/node/.openclaw/workspace/skills/
+# Docker — source skills are inside your container, use docker cp
+docker cp <your-container>:/home/node/.openclaw/workspace/skills/ /tmp/skills-transfer/
+docker cp /tmp/skills-transfer/ <new-container>:/home/node/.openclaw/workspace/skills/
+# Or if deploying remotely, scp them to the target host first
+
 # Bare metal
 cp -r <source-workspace>/skills/ ~/.openclaw/workspace/skills/
 ```
@@ -173,6 +186,6 @@ Tell the user:
 - `--accept-risk` required for non-interactive onboard.
 - `alpine/openclaw:latest` — pre-built official image.
 - Don't use named Docker volumes — root ownership issues. Official compose uses bind mounts.
-- Multiple agents on same host: use different `OPENCLAW_CONFIG_DIR` and `OPENCLAW_GATEWAY_PORT`.
+- Multiple agents on same host: use different `OPENCLAW_CONFIG_DIR`, `OPENCLAW_GATEWAY_PORT`, AND `OPENCLAW_BRIDGE_PORT`. Check `docker ps` for used ports before deploying.
 - Plugins and skills persist in `~/.openclaw/` volume (extensions/ and workspace/skills/).
 - SSH keys, git config, apt packages are ephemeral — not in the volume, by design.
