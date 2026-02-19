@@ -95,7 +95,33 @@ openclaw onboard --non-interactive --accept-risk \
   --skip-skills
 ```
 
-## 4. Patch Running Agent
+## 4. Confirm Carry-Over
+
+Before patching, show the user a complete list of everything that will be added to the new agent. Build this from what you found in step 1.
+
+Example:
+
+```
+Here's what I'll carry over to the new agent:
+
+✅ Provider: Anthropic (API key from env)
+✅ Model: anthropic/claude-sonnet-4-20250514
+✅ Brave Search API key
+✅ Plugins:
+   - openclaw-agent-reach (npm)
+✅ Skills:
+   - agent-spawner
+   - weather
+✅ Config:
+   - Heartbeat: 30m
+   - Streaming: off
+
+Does this look right, or do you want to change anything?
+```
+
+Only include items that actually exist. Wait for confirmation before proceeding.
+
+## 5. Patch Running Agent
 
 CLI alias:
 - Docker: `OC="docker compose exec openclaw-gateway node /app/openclaw.mjs"`
@@ -129,7 +155,7 @@ docker compose restart openclaw-gateway  # Docker
 openclaw gateway restart                 # bare metal
 ```
 
-## 5. Hand Off
+## 6. Hand Off
 
 Read the gateway token:
 ```bash
