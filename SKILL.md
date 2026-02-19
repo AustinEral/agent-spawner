@@ -1,148 +1,135 @@
 ---
 name: agent-spawner
-description: Spawn a new OpenClaw agent through conversation. Automatically carries over API keys and config from the current agent, deploys via Docker, and gets a working gateway with Control UI access. User just answers 2-3 questions. Use when the user wants to create, spin up, deploy, or provision a new OpenClaw agent.
+description: Spawn a new OpenClaw agent through conversation. Uses the official OpenClaw Docker setup, then patches in API keys and config on the running instance. User just answers a couple questions. Use when the user wants to create, spin up, deploy, or provision a new OpenClaw agent.
 ---
 
 # Agent Spawner
 
-Deploy a new OpenClaw agent by having a conversation. The agent running this skill does all the work — reads config, generates files, deploys the container, and hands back a URL + token.
+Deploy a new OpenClaw agent conversationally. Uses OpenClaw's official install, then patches the running agent with keys from the current config. User never edits a file.
 
 ## Flow
 
 ### 1. Read Current Config (silent)
-
-Read the current agent's config without asking:
 
 ```bash
 cat ~/.openclaw/openclaw.json
 cat ~/.openclaw/.env 2>/dev/null
 ```
 
-Extract:
-- Provider API keys (Anthropic, OpenAI, etc.)
-- Model setting
-- Tool keys (Brave Search, etc.)
-- Installed plugins/extensions list
+Note what's available: provider API keys, model, tool keys (Brave Search, etc.). These will be patched into the new agent after it's running.
 
-These carry over automatically. Don't ask.
+### 2. Ask
 
-### 2. Ask Questions
+Two questions, maybe three:
 
-Three questions max:
+1. **"Where should I deploy it?"** — options:
+   - **Docker on this machine** — run it locally
+   - **Docker on a remote host** — give SSH credentials
+   - **Bare metal / already have a machine** — just need the install commands run
+2. **"Want to give it a name?"** — optional, for the container/service name
+3. **"Anything special about this agent?"** — purpose, who it's for, constraints. Optional.
 
-1. **"Where should I deploy it?"** — local Docker or SSH to a remote host? If remote, get host/credentials.
-2. **"Want to give it a name?"** — for the Docker container. Optional, generate one if they don't care.
-3. **"Anything special about this agent?"** — purpose, constraints, or skip. This is just context for the user's own reference, not config.
+Don't ask about API keys, model, ports, or any config — carry it all over from the current agent automatically.
 
-Don't ask about:
-- Personality/identity (the agent develops that itself through bootstrapping)
-- Channels (they'll set up their own channels later — start with just the Control UI/web chat)
-- Ports, bind, auth, heartbeat, streaming (use defaults)
-- Which keys to carry over (carry over all of them)
+### 3. Deploy a Vanilla Agent
 
-### 3. Generate Config
+Use the official OpenClaw installation. The goal is a running gateway you can talk to via the Control UI.
 
-Create a temp working directory and generate two files:
-
-**`.env`:**
-```bash
-# Carried over from current agent
-ANTHROPIC_API_KEY=<from config>
-# OPENAI_API_KEY=<if exists>
-OPENCLAW_GATEWAY_TOKEN=<auto-generate>
-```
-
-Auto-generate the gateway token:
-```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
-
-**`openclaw.json`:**
-```json
-{
-  "agents": {
-    "defaults": {
-      "model": "<same as current agent>"
-    }
-  },
-  "gateway": {
-    "port": 18789,
-    "mode": "local",
-    "bind": "lan",
-    "auth": {
-      "mode": "token"
-    }
-  },
-  "tools": {
-    "web": {
-      "search": {
-        "apiKey": "<if current agent has one>"
-      }
-    }
-  }
-}
-```
-
-Minimal. No channels (Control UI works out of the box). No plugins. No workspace config. Just provider auth, gateway, and tools.
-
-### 4. Deploy
-
-#### Local Docker
+#### Docker (local or remote via SSH)
 
 ```bash
-cd /tmp
-git clone https://github.com/openclaw/openclaw.git <agent-name>
-cd <agent-name>
-cp <generated>/.env .
-./docker-setup.sh
+# Clone the repo
+git clone https://github.com/openclaw/openclaw.git
+cd openclaw
+
+# Non-interactive onboard with the current agent's API key
+# This builds the image, runs onboarding, and starts the gateway
+ANTHROPIC_API_KEY="<from current config>" ./docker-setup.sh
 ```
 
-Then copy the config into the running container:
+Or if `docker-setup.sh` requires interaction, use the manual flow:
+
 ```bash
-docker cp <generated>/openclaw.json <container>:/home/node/.openclaw/openclaw.json
-docker exec -u root <container> chown node:node /home/node/.openclaw/openclaw.json
+docker build -t openclaw:local -f Dockerfile .
+
+# Non-interactive onboard
+docker compose run --rm openclaw-cli onboard --non-interactive \
+  --mode local \
+  --auth-choice apiKey \
+  --anthropic-api-key "<from current config>" \
+  --gateway-port 18789 \
+  --gateway-bind lan \
+  --skip-skills
+
+# Start the gateway
+docker compose up -d openclaw-gateway
+```
+
+If deploying remotely, run all of this over SSH.
+
+#### Bare metal
+
+```bash
+curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard
+
+openclaw onboard --non-interactive \
+  --mode local \
+  --auth-choice apiKey \
+  --anthropic-api-key "<from current config>" \
+  --gateway-port 18789 \
+  --gateway-bind lan \
+  --install-daemon \
+  --daemon-runtime node \
+  --skip-skills
+```
+
+### 4. Patch the Running Agent
+
+Once the gateway is up, use `openclaw config set` (via `docker exec` if Docker) to add everything from the current agent's config.
+
+```bash
+# Alias for convenience (Docker)
+OC="docker exec <container> openclaw"
+
+# Or bare metal
+OC="openclaw"
+
+# Set model (if different from default)
+$OC config set agents.defaults.model "<model from current config>"
+
+# Set tool keys
+$OC config set tools.web.search.apiKey "<brave key from current config>"
+
+# Set heartbeat
+$OC config set agents.defaults.heartbeat.every "30m"
+
+# Restart to pick up changes
+# Docker:
 docker restart <container>
+# Bare metal:
+openclaw gateway restart
 ```
 
-#### Remote Host (SSH)
+Only patch what the current agent actually has configured. Skip anything that's default or empty.
 
-Do it all over SSH — clone, copy files, run setup. Don't hand the user commands to run.
+### 5. Verify & Hand Off
 
 ```bash
-ssh user@host "git clone https://github.com/openclaw/openclaw.git ~/openclaw"
-scp .env user@host:~/openclaw/
-ssh user@host "cd ~/openclaw && ./docker-setup.sh"
-scp openclaw.json user@host:~/.openclaw/
-ssh user@host "docker restart <container>"
+$OC status
 ```
-
-### 5. Hand Off
 
 Tell the user:
-- **Control UI URL:** `http://<host>:18789/`
-- **Gateway token:** (the one you generated)
-- "Send it a message in the Control UI to get started — it'll introduce itself and set up its own identity."
+- **Control UI:** `http://<host>:18789/`
+- **Gateway token:** (from the onboard output or `.env`)
+- "Open the Control UI, paste the token, and send a message. The agent will introduce itself."
 
-That's it. The new agent bootstraps itself on first message.
+The new agent bootstraps on first message — it'll ask its own identity questions and set up its personality.
 
-### Defaults (never ask)
+## What NOT to do
 
-| Setting | Value |
-|---------|-------|
-| Port | 18789 |
-| Bind | lan |
-| Auth | token (auto-generated) |
-| Heartbeat | 30m |
-| Streaming | off |
-| Channels | none (Control UI only) |
-| Plugins | none |
-| Model | same as current agent |
-
-### Rules
-
-1. **Carry over all keys silently** — API keys, search keys, everything
-2. **No channels** — start with just gateway + Control UI. User adds channels later.
-3. **No workspace files** — bootstrapping handles identity, personality, everything
-4. **No personality config** — the agent figures out who it is on its own
-5. **Do the deployment** — user never runs a command or edits a file
-6. **3 questions max**
+- Don't pre-generate openclaw.json — use `openclaw onboard` + `openclaw config set`
+- Don't create workspace files — bootstrapping does this
+- Don't configure channels — user adds those later when they have bot tokens
+- Don't install plugins during setup — user or agent does this after bootstrapping
+- Don't ask more than 3 questions
+- Don't hand the user commands to run — do it yourself via exec/SSH
