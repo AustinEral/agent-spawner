@@ -1,108 +1,131 @@
 ---
 name: agent-spawner
-description: Spawn a new OpenClaw agent fast by carrying over API keys, channel tokens, skills, and search keys from the current agent's config. Eliminates the tedious re-entry of secrets and credentials. Use when the user wants to create, spin up, deploy, or provision a new OpenClaw agent.
+description: Spawn a new OpenClaw agent through conversation. Automatically reads the current agent's config, asks a few questions, then generates and optionally deploys a complete agent — no manual file editing required. Use when the user wants to create, spin up, deploy, or provision a new OpenClaw agent.
 ---
 
 # Agent Spawner
 
-Speed up new agent setup by selectively exporting secrets and config from the current agent. OpenClaw's official Docker setup and bootstrapping handle everything else.
+Deploy a new OpenClaw agent by having a conversation. The agent running this skill does everything — reads config, generates files, copies them to the target, and starts the container. The user just answers questions.
 
-## What This Skill Does
+## Flow
 
-1. Reads the current agent's config and credentials
-2. Asks the user what to carry over
-3. Generates a `.env` and `openclaw.json` with just the selected secrets/config
-4. Provides copy-paste deploy instructions using OpenClaw's official Docker flow
+### 1. Read Current Config (silent — don't ask)
 
-## What This Skill Does NOT Do
-
-- Generate workspace files (bootstrapping does this)
-- Generate docker-compose.yml (OpenClaw ships one)
-- Replace the onboarding wizard (it complements it)
-
-## Setup Flow
-
-### Step 1: Inventory
-
-Read the current agent's config and find what's transferable:
-
-```
-~/.openclaw/openclaw.json    — channels, plugins, tools, provider config
-~/.openclaw/.env             — API keys, tokens
-```
-
-Build a checklist of what exists:
-- [ ] AI provider key (Anthropic, OpenAI, etc.)
-- [ ] Channel tokens (Telegram bot, Discord bot, Nostr key, etc.)
-- [ ] Search API key (Brave)
-- [ ] Installed plugins/skills
-- [ ] Any custom provider config
-
-Present this list to the user.
-
-### Step 2: Select
-
-Ask the user which items to carry over. For each:
-- **API keys** — "Carry over your Anthropic key?" (yes/no)
-- **Channels** — "Which channels? Telegram, Discord, Nostr..." (pick)
-- **Channel tokens** — for each selected channel, carry over the existing token or enter a new one
-- **Search keys** — "Carry over Brave Search key?" (yes/no)  
-- **Skills/plugins** — "Which plugins? openclaw-agent-reach, ..." (pick)
-
-Also ask:
-- **New agent name** — for the container
-- **Gateway port** — default 18789, but if running on same host need a different port
-- **Gateway token** — auto-generate one
-
-### Step 3: Generate
-
-Produce two files:
-
-**`.env`** — all selected secrets:
-```bash
-ANTHROPIC_API_KEY=...
-OPENCLAW_GATEWAY_TOKEN=...
-TELEGRAM_BOT_TOKEN=...
-```
-
-**`openclaw.json`** — minimal config with selected channels, plugins, and tools. Only include sections the user selected. Let OpenClaw defaults handle everything else.
-
-Important:
-- Do NOT inline secrets in openclaw.json — reference env vars where possible
-- Do NOT include workspace paths (Docker default is correct)
-- Do NOT include agent identity/personality (bootstrapping handles this)
-- Keep the config minimal — only what differs from OpenClaw defaults
-
-### Step 4: Deploy Instructions
-
-Give the user these steps:
+Automatically read and inventory the current agent's secrets and config:
 
 ```bash
-# 1. Clone the OpenClaw repo (has docker-compose + Dockerfile)
-git clone https://github.com/openclaw/openclaw.git
-cd openclaw
+# Find all transferable config
+cat ~/.openclaw/openclaw.json
+cat ~/.openclaw/.env 2>/dev/null
+ls ~/.openclaw/extensions/
+```
 
-# 2. Copy your generated files
-cp /path/to/.env .
-cp /path/to/openclaw.json ~/.openclaw/openclaw.json
-# (or mount them — adjust docker-compose.yml volumes as needed)
+Build an internal list:
+- Provider API keys (Anthropic, OpenAI, etc.)
+- Channel configs and tokens (Telegram, Discord, Nostr, etc.)
+- Tool keys (Brave Search, etc.)
+- Installed plugins/extensions
+- Gateway settings
 
-# 3. Run the official Docker setup
+### 2. Ask Questions (conversational)
+
+Keep it brief. Ask naturally, not like a form:
+
+1. **"What do you want to call the new agent?"**
+2. **"Who's it for?"** — name, timezone
+3. **"Want me to use the same API key / channels / search key?"** — present what you found as a checklist. Default to yes for everything unless they say otherwise.
+4. **"Where should I deploy it?"** — local Docker, or SSH to a remote host? If remote, get the host/credentials.
+5. **"Anything special about this agent?"** — personality, purpose, or skip
+
+That's it. 5 questions max. Don't ask about ports, bind addresses, auth modes, heartbeat intervals, or any technical config — use sensible defaults (port 18789, bind lan, token auth, 30m heartbeat). Only ask if there's a conflict (e.g. same port on same host).
+
+### 3. Generate Everything
+
+Create a temp directory and generate:
+
+**`.env`:**
+```bash
+# Pull from gathered config
+ANTHROPIC_API_KEY=<from current config>
+OPENCLAW_GATEWAY_TOKEN=<auto-generate>
+# ... any channel tokens selected
+```
+
+**`openclaw.json`:**
+- Only include non-default settings
+- Channels the user selected (with tokens/keys)
+- Plugin entries for enabled channels
+- Tool config (search keys, etc.)
+- Model setting
+- Gateway auth mode token
+
+Generate the gateway token automatically:
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+### 4. Deploy
+
+#### Local Docker
+```bash
+# Clone OpenClaw repo
+git clone https://github.com/openclaw/openclaw.git /tmp/<agent-name>-deploy
+cd /tmp/<agent-name>-deploy
+
+# Copy generated config
+cp .env /tmp/<agent-name>-deploy/
+mkdir -p ~/.openclaw-<agent-name>
+cp openclaw.json ~/.openclaw-<agent-name>/openclaw.json
+
+# Run official setup
 ./docker-setup.sh
-
-# 4. Install selected plugins (post-start)
-docker compose exec openclaw-gateway openclaw plugins install <plugin-name>
 ```
 
-Or if deploying to a remote host, tell them to scp the `.env` and `openclaw.json` first.
+Adjust as needed — the official `docker-setup.sh` handles building, compose, and startup.
 
-Adjust instructions based on whether they're deploying locally or remotely. The official `docker-setup.sh` handles image building, compose, and startup.
+#### Remote Host (SSH)
+If the user gave SSH access:
+```bash
+# SSH in, clone repo, copy files, run setup
+ssh user@host "git clone https://github.com/openclaw/openclaw.git ~/openclaw && cd ~/openclaw && ./docker-setup.sh"
+scp .env user@host:~/openclaw/
+scp openclaw.json user@host:~/.openclaw/
+ssh user@host "cd ~/openclaw && docker compose restart"
+```
 
-### Step 5: Post-Deploy Checklist
+Do all of this automatically. Don't ask the user to run commands.
 
-Remind the user:
-- Open the Control UI and paste the gateway token
-- The agent will bootstrap on first message (identity Q&A)
-- If WhatsApp/Signal: run `openclaw channels login` for interactive setup
-- If plugins were selected: install them and restart
-- Verify with `openclaw status` inside the container
+### 5. Post-Deploy
+
+After the container is running:
+
+1. Install any selected plugins:
+   ```bash
+   docker exec <container> openclaw plugins install <plugin-name>
+   ```
+2. Restart if plugins were installed
+3. Tell the user:
+   - Control UI URL and gateway token
+   - "Send it a message to start bootstrapping"
+   - Any channels that need interactive login (WhatsApp, Signal)
+
+### Defaults (don't ask unless conflict)
+
+| Setting | Default |
+|---------|---------|
+| Port | 18789 |
+| Bind | lan |
+| Auth | token (auto-generated) |
+| Heartbeat | 30m |
+| Streaming | off |
+| DM policy | pairing |
+| Model | same as current agent |
+
+### Key Rules
+
+1. **Do the work** — user should never edit a file or run a command
+2. **Reuse everything by default** — carry over all keys/tokens unless told not to
+3. **Minimal questions** — 5 or fewer
+4. **No workspace files** — bootstrapping generates those on first message
+5. **Auto-generate secrets** — gateway tokens, Nostr keys if needed
+6. **Handle deployment** — clone, copy, start. Don't hand off instructions.
