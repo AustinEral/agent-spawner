@@ -1,131 +1,148 @@
 ---
 name: agent-spawner
-description: Spawn a new OpenClaw agent through conversation. Automatically reads the current agent's config, asks a few questions, then generates and optionally deploys a complete agent — no manual file editing required. Use when the user wants to create, spin up, deploy, or provision a new OpenClaw agent.
+description: Spawn a new OpenClaw agent through conversation. Automatically carries over API keys and config from the current agent, deploys via Docker, and gets a working gateway with Control UI access. User just answers 2-3 questions. Use when the user wants to create, spin up, deploy, or provision a new OpenClaw agent.
 ---
 
 # Agent Spawner
 
-Deploy a new OpenClaw agent by having a conversation. The agent running this skill does everything — reads config, generates files, copies them to the target, and starts the container. The user just answers questions.
+Deploy a new OpenClaw agent by having a conversation. The agent running this skill does all the work — reads config, generates files, deploys the container, and hands back a URL + token.
 
 ## Flow
 
-### 1. Read Current Config (silent — don't ask)
+### 1. Read Current Config (silent)
 
-Automatically read and inventory the current agent's secrets and config:
+Read the current agent's config without asking:
 
 ```bash
-# Find all transferable config
 cat ~/.openclaw/openclaw.json
 cat ~/.openclaw/.env 2>/dev/null
-ls ~/.openclaw/extensions/
 ```
 
-Build an internal list:
+Extract:
 - Provider API keys (Anthropic, OpenAI, etc.)
-- Channel configs and tokens (Telegram, Discord, Nostr, etc.)
+- Model setting
 - Tool keys (Brave Search, etc.)
-- Installed plugins/extensions
-- Gateway settings
+- Installed plugins/extensions list
 
-### 2. Ask Questions (conversational)
+These carry over automatically. Don't ask.
 
-Keep it brief. Ask naturally, not like a form:
+### 2. Ask Questions
 
-1. **"What do you want to call the new agent?"**
-2. **"Who's it for?"** — name, timezone
-3. **"Want me to use the same API key / channels / search key?"** — present what you found as a checklist. Default to yes for everything unless they say otherwise.
-4. **"Where should I deploy it?"** — local Docker, or SSH to a remote host? If remote, get the host/credentials.
-5. **"Anything special about this agent?"** — personality, purpose, or skip
+Three questions max:
 
-That's it. 5 questions max. Don't ask about ports, bind addresses, auth modes, heartbeat intervals, or any technical config — use sensible defaults (port 18789, bind lan, token auth, 30m heartbeat). Only ask if there's a conflict (e.g. same port on same host).
+1. **"Where should I deploy it?"** — local Docker or SSH to a remote host? If remote, get host/credentials.
+2. **"Want to give it a name?"** — for the Docker container. Optional, generate one if they don't care.
+3. **"Anything special about this agent?"** — purpose, constraints, or skip. This is just context for the user's own reference, not config.
 
-### 3. Generate Everything
+Don't ask about:
+- Personality/identity (the agent develops that itself through bootstrapping)
+- Channels (they'll set up their own channels later — start with just the Control UI/web chat)
+- Ports, bind, auth, heartbeat, streaming (use defaults)
+- Which keys to carry over (carry over all of them)
 
-Create a temp directory and generate:
+### 3. Generate Config
+
+Create a temp working directory and generate two files:
 
 **`.env`:**
 ```bash
-# Pull from gathered config
-ANTHROPIC_API_KEY=<from current config>
+# Carried over from current agent
+ANTHROPIC_API_KEY=<from config>
+# OPENAI_API_KEY=<if exists>
 OPENCLAW_GATEWAY_TOKEN=<auto-generate>
-# ... any channel tokens selected
 ```
 
-**`openclaw.json`:**
-- Only include non-default settings
-- Channels the user selected (with tokens/keys)
-- Plugin entries for enabled channels
-- Tool config (search keys, etc.)
-- Model setting
-- Gateway auth mode token
-
-Generate the gateway token automatically:
+Auto-generate the gateway token:
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
+**`openclaw.json`:**
+```json
+{
+  "agents": {
+    "defaults": {
+      "model": "<same as current agent>"
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "lan",
+    "auth": {
+      "mode": "token"
+    }
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "apiKey": "<if current agent has one>"
+      }
+    }
+  }
+}
+```
+
+Minimal. No channels (Control UI works out of the box). No plugins. No workspace config. Just provider auth, gateway, and tools.
+
 ### 4. Deploy
 
 #### Local Docker
+
 ```bash
-# Clone OpenClaw repo
-git clone https://github.com/openclaw/openclaw.git /tmp/<agent-name>-deploy
-cd /tmp/<agent-name>-deploy
-
-# Copy generated config
-cp .env /tmp/<agent-name>-deploy/
-mkdir -p ~/.openclaw-<agent-name>
-cp openclaw.json ~/.openclaw-<agent-name>/openclaw.json
-
-# Run official setup
+cd /tmp
+git clone https://github.com/openclaw/openclaw.git <agent-name>
+cd <agent-name>
+cp <generated>/.env .
 ./docker-setup.sh
 ```
 
-Adjust as needed — the official `docker-setup.sh` handles building, compose, and startup.
-
-#### Remote Host (SSH)
-If the user gave SSH access:
+Then copy the config into the running container:
 ```bash
-# SSH in, clone repo, copy files, run setup
-ssh user@host "git clone https://github.com/openclaw/openclaw.git ~/openclaw && cd ~/openclaw && ./docker-setup.sh"
-scp .env user@host:~/openclaw/
-scp openclaw.json user@host:~/.openclaw/
-ssh user@host "cd ~/openclaw && docker compose restart"
+docker cp <generated>/openclaw.json <container>:/home/node/.openclaw/openclaw.json
+docker exec -u root <container> chown node:node /home/node/.openclaw/openclaw.json
+docker restart <container>
 ```
 
-Do all of this automatically. Don't ask the user to run commands.
+#### Remote Host (SSH)
 
-### 5. Post-Deploy
+Do it all over SSH — clone, copy files, run setup. Don't hand the user commands to run.
 
-After the container is running:
+```bash
+ssh user@host "git clone https://github.com/openclaw/openclaw.git ~/openclaw"
+scp .env user@host:~/openclaw/
+ssh user@host "cd ~/openclaw && ./docker-setup.sh"
+scp openclaw.json user@host:~/.openclaw/
+ssh user@host "docker restart <container>"
+```
 
-1. Install any selected plugins:
-   ```bash
-   docker exec <container> openclaw plugins install <plugin-name>
-   ```
-2. Restart if plugins were installed
-3. Tell the user:
-   - Control UI URL and gateway token
-   - "Send it a message to start bootstrapping"
-   - Any channels that need interactive login (WhatsApp, Signal)
+### 5. Hand Off
 
-### Defaults (don't ask unless conflict)
+Tell the user:
+- **Control UI URL:** `http://<host>:18789/`
+- **Gateway token:** (the one you generated)
+- "Send it a message in the Control UI to get started — it'll introduce itself and set up its own identity."
 
-| Setting | Default |
-|---------|---------|
+That's it. The new agent bootstraps itself on first message.
+
+### Defaults (never ask)
+
+| Setting | Value |
+|---------|-------|
 | Port | 18789 |
 | Bind | lan |
 | Auth | token (auto-generated) |
 | Heartbeat | 30m |
 | Streaming | off |
-| DM policy | pairing |
+| Channels | none (Control UI only) |
+| Plugins | none |
 | Model | same as current agent |
 
-### Key Rules
+### Rules
 
-1. **Do the work** — user should never edit a file or run a command
-2. **Reuse everything by default** — carry over all keys/tokens unless told not to
-3. **Minimal questions** — 5 or fewer
-4. **No workspace files** — bootstrapping generates those on first message
-5. **Auto-generate secrets** — gateway tokens, Nostr keys if needed
-6. **Handle deployment** — clone, copy, start. Don't hand off instructions.
+1. **Carry over all keys silently** — API keys, search keys, everything
+2. **No channels** — start with just gateway + Control UI. User adds channels later.
+3. **No workspace files** — bootstrapping handles identity, personality, everything
+4. **No personality config** — the agent figures out who it is on its own
+5. **Do the deployment** — user never runs a command or edits a file
+6. **3 questions max**
