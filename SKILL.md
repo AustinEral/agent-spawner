@@ -33,7 +33,33 @@ Identify:
 
 Don't ask about keys, plugins, skills, ports, or config. Carry everything over, use defaults.
 
-## 3. Deploy
+## 3. Confirm Plan
+
+After gathering answers, present the full plan before doing anything. Show everything in one summary:
+
+```
+Here's the plan:
+
+📦 Deploy: Docker on <target>
+📛 Name: <agent-name>
+🌐 Port: <port>
+
+Carrying over from current agent:
+  ✅ Provider: Anthropic (API key)
+  ✅ Model: anthropic/claude-sonnet-4-20250514
+  ✅ Brave Search API key
+  ✅ Plugins: openclaw-agent-reach
+  ✅ Skills: agent-spawner, weather
+  ✅ Heartbeat: 30m
+
+The new agent will bootstrap its own identity on first message.
+
+Good to go?
+```
+
+Only list items that actually exist. Wait for explicit confirmation before proceeding. If the user wants changes, adjust and re-confirm.
+
+## 4. Deploy
 
 ### Docker
 
@@ -94,32 +120,6 @@ openclaw onboard --non-interactive --accept-risk \
   --daemon-runtime node \
   --skip-skills
 ```
-
-## 4. Confirm Carry-Over
-
-Before patching, show the user a complete list of everything that will be added to the new agent. Build this from what you found in step 1.
-
-Example:
-
-```
-Here's what I'll carry over to the new agent:
-
-✅ Provider: Anthropic (API key from env)
-✅ Model: anthropic/claude-sonnet-4-20250514
-✅ Brave Search API key
-✅ Plugins:
-   - openclaw-agent-reach (npm)
-✅ Skills:
-   - agent-spawner
-   - weather
-✅ Config:
-   - Heartbeat: 30m
-   - Streaming: off
-
-Does this look right, or do you want to change anything?
-```
-
-Only include items that actually exist. Wait for confirmation before proceeding.
 
 ## 5. Patch Running Agent
 
