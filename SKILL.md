@@ -5,19 +5,25 @@ description: Spawn a new OpenClaw agent through conversation. Uses official Dock
 
 # Agent Spawner
 
-Deploy a new OpenClaw agent conversationally. Official install, then carry over config from the current agent. User never edits a file.
+Deploy a new OpenClaw agent conversationally. Official install, carry over config from the current agent. User never edits a file.
 
 ## 1. Read Current Config (silent)
 
 ```bash
 cat ~/.openclaw/openclaw.json
 cat ~/.openclaw/.env 2>/dev/null
-echo $ANTHROPIC_API_KEY
+env | grep -iE 'API_KEY|TOKEN'
 ls ~/.openclaw/extensions/
 ls <workspace>/skills/
 ```
 
-Note: provider API key, model, tool keys, installed plugins, workspace skills.
+Identify:
+- **Provider**: check `auth.profiles` in config — could be Anthropic, OpenAI, Gemini, custom, etc.
+- **API key**: from env var or config (e.g. `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`)
+- **Model**: from `agents.defaults.model`
+- **Tool keys**: anything in `tools.*` (search APIs, etc.)
+- **Plugins**: `plugins.installs` — names and npm specs
+- **Skills**: workspace `skills/` directory
 
 ## 2. Ask
 
@@ -36,7 +42,7 @@ git clone https://github.com/openclaw/openclaw.git <agent-name>
 cd <agent-name>
 ```
 
-Set env and run non-interactive onboard:
+Set env and run non-interactive onboard. Match the provider detected in step 1:
 
 ```bash
 export OPENCLAW_IMAGE=alpine/openclaw:latest
@@ -44,14 +50,24 @@ export OPENCLAW_CONFIG_DIR=~/.openclaw-<agent-name>
 export OPENCLAW_WORKSPACE_DIR=~/.openclaw-<agent-name>/workspace
 export OPENCLAW_GATEWAY_PORT=<unused port, default 18789>
 export OPENCLAW_GATEWAY_BIND=lan
-export ANTHROPIC_API_KEY=<from current agent>
 
 mkdir -p $OPENCLAW_CONFIG_DIR/workspace
+```
 
+**Onboard flags vary by provider.** Use the matching `--auth-choice` and key flag:
+
+| Provider | --auth-choice | Key flag |
+|----------|--------------|----------|
+| Anthropic | `apiKey` | `--anthropic-api-key` |
+| Gemini | `gemini-api-key` | `--gemini-api-key` |
+| OpenAI | `apiKey` | (set `OPENAI_API_KEY` env) |
+| Custom | `custom-api-key` | `--custom-api-key` + `--custom-base-url` + `--custom-model-id` |
+
+```bash
 docker compose run --rm openclaw-cli onboard --non-interactive --accept-risk \
   --mode local \
-  --auth-choice apiKey \
-  --anthropic-api-key "$ANTHROPIC_API_KEY" \
+  --auth-choice <detected> \
+  --<provider>-api-key "$API_KEY" \
   --gateway-port 18789 \
   --gateway-bind lan \
   --skip-skills
@@ -59,9 +75,9 @@ docker compose run --rm openclaw-cli onboard --non-interactive --accept-risk \
 docker compose up -d openclaw-gateway
 ```
 
-The official compose uses **bind mounts** from `OPENCLAW_CONFIG_DIR` — host user owns the files, no permission issues.
+Official compose uses **bind mounts** — host user owns files, no permission issues.
 
-The onboard error about gateway connection is expected (gateway wasn't running yet). Config is already written.
+Onboard error about gateway connection is expected (not running yet). Config is written.
 
 ### Bare metal
 
@@ -70,8 +86,8 @@ curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard
 
 openclaw onboard --non-interactive --accept-risk \
   --mode local \
-  --auth-choice apiKey \
-  --anthropic-api-key "<from current agent>" \
+  --auth-choice <detected> \
+  --<provider>-api-key "$API_KEY" \
   --gateway-port 18789 \
   --gateway-bind lan \
   --install-daemon \
@@ -81,29 +97,30 @@ openclaw onboard --non-interactive --accept-risk \
 
 ## 4. Patch Running Agent
 
-CLI inside Docker: `docker compose exec openclaw-gateway node /app/openclaw.mjs`
-Bare metal: `openclaw`
+CLI alias:
+- Docker: `OC="docker compose exec openclaw-gateway node /app/openclaw.mjs"`
+- Bare metal: `OC="openclaw"`
 
-**Config:**
+**Config** (only patch what the current agent actually has):
 ```bash
-$OC config set tools.web.search.apiKey "<brave key>"
-$OC config set agents.defaults.heartbeat.every "30m"
 $OC config set agents.defaults.model "<model>"
+$OC config set agents.defaults.heartbeat.every "30m"
+# Tool keys — only if they exist in current config
+$OC config set tools.web.search.apiKey "<key>"
 ```
 
-**Plugins** (installed into `~/.openclaw/extensions/`, persists in volume):
+**Plugins** (from `plugins.installs` in current config):
 ```bash
-$OC plugins install <plugin-name>
-$OC config set plugins.entries.<plugin-name>.enabled true
+$OC plugins install <npm-spec>
+# Repeat for each plugin
 ```
 
-Repeat for each plugin the current agent has. Check `plugins.installs` in current config for the list.
-
-**Skills** (workspace skills persist in volume):
+**Skills** (copy workspace skills):
 ```bash
-# Copy from current agent's workspace
-docker cp <current-workspace>/skills/ <container>:/home/node/.openclaw/workspace/skills/
-# Or for bare metal, just cp the directory
+# Docker
+docker cp <source-workspace>/skills/ <container>:/home/node/.openclaw/workspace/skills/
+# Bare metal
+cp -r <source-workspace>/skills/ ~/.openclaw/workspace/skills/
 ```
 
 **Restart:**
@@ -114,9 +131,9 @@ openclaw gateway restart                 # bare metal
 
 ## 5. Hand Off
 
-Read the gateway token from config:
+Read the gateway token:
 ```bash
-cat $OPENCLAW_CONFIG_DIR/openclaw.json | grep -A1 '"token"'
+grep -A1 '"token"' $OPENCLAW_CONFIG_DIR/openclaw.json
 ```
 
 Tell the user:
@@ -126,10 +143,10 @@ Tell the user:
 
 ## Notes
 
-- `openclaw` is NOT in PATH inside the Docker container. Use `node /app/openclaw.mjs`.
-- `--accept-risk` is required for non-interactive onboard.
-- Use `alpine/openclaw:latest` — pre-built, skip source build.
-- Don't use named Docker volumes — they create root-owned dirs. Official compose uses bind mounts.
-- Multiple agents on same host: different `OPENCLAW_CONFIG_DIR` and `OPENCLAW_GATEWAY_PORT`.
-- Plugins and skills persist in `~/.openclaw/` (extensions/ and workspace/skills/).
+- `openclaw` not in PATH inside Docker. Use `node /app/openclaw.mjs`.
+- `--accept-risk` required for non-interactive onboard.
+- `alpine/openclaw:latest` — pre-built official image.
+- Don't use named Docker volumes — root ownership issues. Official compose uses bind mounts.
+- Multiple agents on same host: use different `OPENCLAW_CONFIG_DIR` and `OPENCLAW_GATEWAY_PORT`.
+- Plugins and skills persist in `~/.openclaw/` volume (extensions/ and workspace/skills/).
 - SSH keys, git config, apt packages are ephemeral — not in the volume, by design.
