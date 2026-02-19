@@ -1,11 +1,11 @@
 ---
 name: agent-spawner
-description: Spawn a new OpenClaw agent through conversation. Uses the official OpenClaw Docker setup, then patches in API keys and config on the running instance. User just answers a couple questions. Use when the user wants to create, spin up, deploy, or provision a new OpenClaw agent.
+description: Spawn a new OpenClaw agent through conversation. Uses the official OpenClaw Docker setup and non-interactive onboarding, then patches in extra config on the running instance. User just answers a couple questions. Use when the user wants to create, spin up, deploy, or provision a new OpenClaw agent.
 ---
 
 # Agent Spawner
 
-Deploy a new OpenClaw agent conversationally. Uses OpenClaw's official install, then patches the running agent with keys from the current config. User never edits a file.
+Deploy a new OpenClaw agent conversationally. Uses OpenClaw's official install flow, patches the running instance with keys from the current agent. User never edits a file.
 
 ## Flow
 
@@ -14,68 +14,86 @@ Deploy a new OpenClaw agent conversationally. Uses OpenClaw's official install, 
 ```bash
 cat ~/.openclaw/openclaw.json
 cat ~/.openclaw/.env 2>/dev/null
+echo $ANTHROPIC_API_KEY  # may be in env
 ```
 
-Note what's available: provider API keys, model, tool keys (Brave Search, etc.). These will be patched into the new agent after it's running.
+Note what's available: provider API key, model, tool keys (Brave Search, etc.).
 
 ### 2. Ask
 
-Two questions, maybe three:
+1. **"Where should I deploy it?"** — Docker (this machine or remote via SSH) or bare metal
+2. **"Want to give it a name?"** — optional, for the container name. Generate one if they don't care.
+3. **"Anything special about this agent?"** — purpose, who it's for. Optional.
 
-1. **"Where should I deploy it?"** — options:
-   - **Docker on this machine** — run it locally
-   - **Docker on a remote host** — give SSH credentials
-   - **Bare metal / already have a machine** — just need the install commands run
-2. **"Want to give it a name?"** — optional, for the container/service name
-3. **"Anything special about this agent?"** — purpose, who it's for, constraints. Optional.
+That's it. Don't ask about API keys, channels, ports, or config.
 
-Don't ask about API keys, model, ports, or any config — carry it all over from the current agent automatically.
+### 3. Deploy
 
-### 3. Deploy a Vanilla Agent
+Pick the right method based on the user's answer.
 
-Use the official OpenClaw installation. The goal is a running gateway you can talk to via the Control UI.
+#### Method A: Docker (recommended)
 
-#### Docker (local or remote via SSH)
+Works on the current machine or remotely over SSH.
 
+**Step 1: Clone the repo**
 ```bash
-# Clone the repo
-git clone https://github.com/openclaw/openclaw.git
-cd openclaw
-
-# Non-interactive onboard with the current agent's API key
-# This builds the image, runs onboarding, and starts the gateway
-ANTHROPIC_API_KEY="<from current config>" ./docker-setup.sh
+git clone https://github.com/openclaw/openclaw.git /path/to/<agent-name>
+cd /path/to/<agent-name>
 ```
 
-Or if `docker-setup.sh` requires interaction, use the manual flow:
+**Step 2: Non-interactive onboard**
+
+The official compose uses bind mounts from `OPENCLAW_CONFIG_DIR` and `OPENCLAW_WORKSPACE_DIR` on the host — NOT named Docker volumes. This means the host user owns the files and there are no permission issues.
 
 ```bash
-docker build -t openclaw:local -f Dockerfile .
+export OPENCLAW_IMAGE=alpine/openclaw:latest   # use pre-built image, skip build
+export OPENCLAW_CONFIG_DIR=~/.openclaw-<agent-name>
+export OPENCLAW_WORKSPACE_DIR=~/.openclaw-<agent-name>/workspace
+export OPENCLAW_GATEWAY_PORT=<pick unused port, default 18789>
+export OPENCLAW_GATEWAY_BIND=lan
+export ANTHROPIC_API_KEY=<from current agent>
 
-# Non-interactive onboard
-docker compose run --rm openclaw-cli onboard --non-interactive \
+mkdir -p $OPENCLAW_CONFIG_DIR/workspace
+
+docker compose run --rm openclaw-cli onboard --non-interactive --accept-risk \
   --mode local \
   --auth-choice apiKey \
-  --anthropic-api-key "<from current config>" \
+  --anthropic-api-key "$ANTHROPIC_API_KEY" \
   --gateway-port 18789 \
   --gateway-bind lan \
   --skip-skills
+```
 
-# Start the gateway
+This creates:
+- `openclaw.json` with auth, gateway, workspace config
+- Workspace files (AGENTS.md, SOUL.md, BOOTSTRAP.md, etc.)
+- Gateway token (auto-generated, written into openclaw.json)
+- Sessions directory
+
+The onboard will show an error about connecting to the gateway — ignore it, the gateway isn't running yet.
+
+**Step 3: Start the gateway**
+```bash
 docker compose up -d openclaw-gateway
 ```
 
-If deploying remotely, run all of this over SSH.
+**Step 4: Verify**
+```bash
+docker compose logs --tail 10 openclaw-gateway
+curl -s -o /dev/null -w '%{http_code}' http://localhost:$OPENCLAW_GATEWAY_PORT/
+```
 
-#### Bare metal
+Should see `listening on ws://0.0.0.0:18789` and HTTP 200.
+
+#### Method B: Bare metal
 
 ```bash
 curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard
 
-openclaw onboard --non-interactive \
+openclaw onboard --non-interactive --accept-risk \
   --mode local \
   --auth-choice apiKey \
-  --anthropic-api-key "<from current config>" \
+  --anthropic-api-key "<from current agent>" \
   --gateway-port 18789 \
   --gateway-bind lan \
   --install-daemon \
@@ -85,51 +103,85 @@ openclaw onboard --non-interactive \
 
 ### 4. Patch the Running Agent
 
-Once the gateway is up, use `openclaw config set` (via `docker exec` if Docker) to add everything from the current agent's config.
+After the gateway is up, use `openclaw config set` to add extras from the current agent.
 
+For Docker, exec into the compose service:
 ```bash
-# Alias for convenience (Docker)
-OC="docker exec <container> openclaw"
+docker compose exec openclaw-gateway node /app/openclaw.mjs config set <key> <value>
+```
 
-# Or bare metal
-OC="openclaw"
+For bare metal:
+```bash
+openclaw config set <key> <value>
+```
 
-# Set model (if different from default)
-$OC config set agents.defaults.model "<model from current config>"
+Patch what the current agent has:
+```bash
+# Search API key
+config set tools.web.search.apiKey "<brave key>"
 
-# Set tool keys
-$OC config set tools.web.search.apiKey "<brave key from current config>"
+# Heartbeat interval
+config set agents.defaults.heartbeat.every "30m"
 
-# Set heartbeat
-$OC config set agents.defaults.heartbeat.every "30m"
+# Model (if different from default)
+config set agents.defaults.model "<model>"
+```
 
-# Restart to pick up changes
-# Docker:
-docker restart <container>
-# Bare metal:
+Then restart:
+```bash
+# Docker
+docker compose restart openclaw-gateway
+
+# Bare metal
 openclaw gateway restart
 ```
 
-Only patch what the current agent actually has configured. Skip anything that's default or empty.
+### 5. Hand Off
 
-### 5. Verify & Hand Off
-
+Read the gateway token from the config:
 ```bash
-$OC status
+cat $OPENCLAW_CONFIG_DIR/openclaw.json | grep -A1 '"token"'
+# Or for bare metal: cat ~/.openclaw/openclaw.json | grep -A1 '"token"'
 ```
 
 Tell the user:
-- **Control UI:** `http://<host>:18789/`
-- **Gateway token:** (from the onboard output or `.env`)
-- "Open the Control UI, paste the token, and send a message. The agent will introduce itself."
+- **Control UI:** `http://<host>:<port>/`
+- **Gateway token:** (from config)
+- "Open the Control UI, paste the token, and say hello. The agent will bootstrap itself."
 
-The new agent bootstraps on first message — it'll ask its own identity questions and set up its personality.
+The new agent has BOOTSTRAP.md in its workspace — on first message it will ask identity questions and set up its personality.
+
+## Gotchas Discovered During Testing
+
+### Use bind mounts, not named volumes
+The official docker-compose uses `OPENCLAW_CONFIG_DIR` and `OPENCLAW_WORKSPACE_DIR` as bind mounts. Do NOT use named Docker volumes — they create directories owned by root, and the container runs as `node` (uid 1000), causing permission errors on canvas, cron, and config writes.
+
+### Use `alpine/openclaw:latest` to skip building
+Set `OPENCLAW_IMAGE=alpine/openclaw:latest` to use the pre-built image. Otherwise `docker-setup.sh` builds from source which is slow.
+
+### CLI path inside Docker
+`openclaw` is NOT in PATH inside the official container. Use:
+```bash
+node /app/openclaw.mjs <command>
+```
+
+### Onboard gateway connection error is expected
+`openclaw onboard` tries to connect to the gateway at the end. Since the gateway isn't running yet during `docker compose run`, it errors with "gateway closed (1006)". This is fine — config is already written.
+
+### `--accept-risk` is required
+Non-interactive onboarding requires `--accept-risk` flag.
+
+### CLAUDE_* env var warnings
+Docker compose warns about unset `CLAUDE_AI_SESSION_KEY`, `CLAUDE_WEB_SESSION_KEY`, `CLAUDE_WEB_COOKIE` vars. These are harmless — they're for Claude.ai web auth which most users don't use.
+
+### Multiple agents on the same host
+Use different `OPENCLAW_GATEWAY_PORT` values and different `OPENCLAW_CONFIG_DIR` paths. Each agent gets its own config directory and port.
 
 ## What NOT to do
 
-- Don't pre-generate openclaw.json — use `openclaw onboard` + `openclaw config set`
-- Don't create workspace files — bootstrapping does this
-- Don't configure channels — user adds those later when they have bot tokens
-- Don't install plugins during setup — user or agent does this after bootstrapping
+- Don't pre-generate openclaw.json — use `openclaw onboard --non-interactive`
+- Don't create workspace files — onboarding does this
+- Don't configure channels — user adds those later
+- Don't use named Docker volumes — use bind mounts
 - Don't ask more than 3 questions
-- Don't hand the user commands to run — do it yourself via exec/SSH
+- Don't hand the user commands to run — do it yourself
